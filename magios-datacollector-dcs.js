@@ -1,87 +1,69 @@
-const watch = require('node-watch');
-const readLastLines = require('read-last-lines');
 const moment = require('moment');
-
+const cron = require('node-cron');
 const axios = require('axios');
 const fs = require('fs');
 
 const DCS_LOG_FILE_PATH = 'dcs.log';
-const LAST_LINE_FILE_PATH = 'lastline';
 
 const BOT_URL = 'https://magios-datacollector-bot.herokuapp.com';
 const SERVER_ID = '2';
 
 console.log('magios-datacollector-dcs has started!!');
 
-let lastDateRegister = null;
-try {
-    lastDateRegister = fs.readFileSync(LAST_LINE_FILE_PATH, 'utf8');
-} catch(e) {
-}
+fs.writeFileSync(DCS_LOG_FILE_PATH, '');
+console.log('dcs.log is empty now.');
 
-let sendData = false;
-watch(DCS_LOG_FILE_PATH, { recursive: true }, function(evt, name) {
-  
-    readLastLines.read(DCS_LOG_FILE_PATH)
-        .then((blockLines) => {
+let lastAlive = null;
 
-            const rawLines = blockLines.split('\n');
-            rawLines.forEach(line => {
+cron.schedule('*/1 * * * *', () => {
+    console.log('Running a task every 1 minute');
 
-                sendData = false;
+    const blockLines = fs.readFileSync(DCS_LOG_FILE_PATH, 'utf8');
+    fs.writeFileSync(DCS_LOG_FILE_PATH, '');
 
-                if (line.indexOf('event:type=birth') >= 0) {
-    
-                    const lineArray = line.split(',');
-                    const strDate = lineArray[0].split('INFO')[0].trim();
-    
-                    const username = getValue(lineArray, 'initiatorPilotName=');
+    const rawLines = blockLines.split('\n');
+    rawLines.forEach(line => {
 
-                    if (username) {
-                        if (lastDateRegister) {
-                            const lastRegDate = moment(lastDateRegister, 'DD-MM-YYYY HH:mm.sss');
-                            const currentRegDate = moment(strDate, 'DD-MM-YYYY HH:mm.sss');
+        if (line.indexOf('NET: added client') >= 0) {
 
-                            if (lastRegDate.isBefore(currentRegDate)) {
-                                sendData = true;
-                            }
+            const aux1 = line.split('INFO');
+            const strDate = aux1[0].trim();
 
-                        } else {
-                            sendData = true;
-                        }
+            const values = aux1[1].trim().split('NET: added client')[1].substring(4).split('name=')[1].split('addr=');
 
-                        if (sendData) {
+            const username = values[0];
+            const ip = values[1];
 
-                            axios.post(BOT_URL + '/user-join-server', {
-                                username: username,
-                                date: strDate,
-                                serverId: SERVER_ID
-                              }).then(function (response) {
-        
-                                lastDateRegister = strDate;
-                                fs.writeFileSync("lastline", lastDateRegister);
-        
-                                console.log('Message sent - Username:' + username + ' has connected.');
-                              }).catch(function (error) {
-                                console.log(error);
-                              });
+            if (username) {
+                axios.post(BOT_URL + '/user-join-server', {
+                    username: username,
+                    date: strDate,
+                    ip: ip,
+                    serverId: SERVER_ID
+                }).then(function (response) {
+                    console.log('Message sent - Username:' + username + ' has connected.');
+                }).catch(function (error) {
+                    console.log(error);
+                });
+            }
 
-                        }
-                    }
-                }
-            })
+        } else if (line.indexOf('Scripting: event') >= 0) {
 
-        });
+            let now = moment();
+
+            if (!lastAlive || now.diff(lastAlive, 'minutes') >= 10) {
+                lastAlive = now;
+                axios.get(BOT_URL + '/server-alive/' + SERVER_ID).then(function (response) {
+                    console.log('Sending Server ' + SERVER_ID + ' is alive.');
+                }).catch(function (error) {
+                    console.log(error);
+                });
+            }
+            
+        }
+    })
+
 });
-
-getValue = (array, key) => {
-    const value = array.find(value => value.indexOf(key) >= 0);
-    if (value) {
-        return value.split('=')[1]
-    } else {
-        return null;
-    }
-}
 
 //Comando para generar el ejecutable:
 //pkg .\magios-datacollector-dcs.js --targets node10-win-x64
